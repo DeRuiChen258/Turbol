@@ -42,6 +42,7 @@ GPUEnvironment::GPUEnvironment(int num_envs, int obs_dim, int act_dim, Device de
       action_shape_(std::vector<int64_t>{static_cast<int64_t>(num_envs),
                                           static_cast<int64_t>(act_dim)}),
       states_(obs_shape_, DataType::kFloat32, device),
+      temp_states_(obs_shape_, DataType::kFloat32, device),
       rng_(42) {
     Reset();
 }
@@ -80,41 +81,59 @@ Status GPUEnvironment::Step(const Tensor& action, Tensor* observation,
     if (action.device() != device_)
         return Status::InvalidArgument("action device must match environment device");
 
+    // Allocate output tensors on the env device.
+    *observation = Tensor(Shape(std::vector<int64_t>{num_envs_, obs_dim_}), DataType::kFloat32, device_);
     *reward = Tensor(Shape(std::vector<int64_t>{num_envs_}), DataType::kFloat32, device_);
     *done = Tensor(Shape(std::vector<int64_t>{num_envs_}), DataType::kBool, device_);
 
     const float* a = action.data<float>();
-    float* s = states_.data<float>();   // updated in-place (per-index, no cross-dependency)
     float* r = reward->data<float>();
     bool* d = done->data<bool>();
 
 #ifdef TURBORL_HAS_CUDA
     if (device_.is_cuda()) {
-        cudaError_t err = env_step_linear(s, a, s, r, d, num_envs_, obs_dim_,
-                                          act_dim_, decay_, force_,
-                                          done_threshold_, nullptr);
+        // Use temp_states_ as the next-state buffer (not states_ itself).
+        // env_step_linear reads states_ and writes temp_states_.
+        cudaError_t err = env_step_linear(states_.data<float>(), a,
+                                          temp_states_.data<float>(), r, d,
+                                          num_envs_, obs_dim_, act_dim_,
+                                          decay_, force_, done_threshold_,
+                                          nullptr);
         if (err != cudaSuccess)
             return Status::CudaError(cudaGetErrorString(err));
+        // Copy result to output and swap into states_.
+        cudaMemcpy(observation->data<float>(), temp_states_.data<float>(),
+                   static_cast<size_t>(num_envs_) * obs_dim_ * sizeof(float),
+                   cudaMemcpyDeviceToDevice);
+        cudaMemcpy(states_.data<float>(), temp_states_.data<float>(),
+                   static_cast<size_t>(num_envs_) * obs_dim_ * sizeof(float),
+                   cudaMemcpyDeviceToDevice);
     } else
 #endif
     {
+        float* out = temp_states_.data<float>();
+        const float* s = states_.data<float>();
         for (int i = 0; i < num_envs_; ++i) {
             float cost = 0.0f;
             float first = 0.0f;
             for (int dd = 0; dd < obs_dim_; ++dd) {
                 const int aa = (dd < act_dim_) ? dd : (act_dim_ - 1);
-                const float v = decay_ * s[i * obs_dim_ + dd] + force_ * a[i * act_dim_ + aa];
-                s[i * obs_dim_ + dd] = v;
+                const float v = decay_ * s[i * obs_dim_ + dd]
+                                + force_ * a[i * act_dim_ + aa];
+                out[i * obs_dim_ + dd] = v;
                 cost += v * v;
                 if (dd == 0) first = v;
             }
             r[i] = -cost;
             d[i] = std::fabs(first) > done_threshold_;
         }
+        // Copy result to output and swap into states_.
+        std::memcpy(observation->data<float>(), out,
+                    static_cast<size_t>(num_envs_) * obs_dim_ * sizeof(float));
+        std::memcpy(states_.data<float>(), out,
+                    static_cast<size_t>(num_envs_) * obs_dim_ * sizeof(float));
     }
 
-    // Hand the caller a snapshot of the new state (deep copy on the env device).
-    *observation = states_.Clone();
     return Status::Ok();
 }
 

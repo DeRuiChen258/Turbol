@@ -62,6 +62,8 @@ static Device ParseDevice(const std::string& device_str) {
 // Create a numpy array over a Tensor.
 //   CPU  tensors -> zero-copy view (writes through to the underlying buffer).
 //   CUDA tensors -> copy device->host into a numpy-owned buffer (safe read).
+// Uses a py::capsule to keep the C++ Tensor alive so numpy treats the buffer
+// as a view rather than copying it.
 static py::array TensorToNumpy(const Tensor& t) {
     std::vector<ssize_t> shape;
     for (auto d : t.shape().dims) shape.push_back(static_cast<ssize_t>(d));
@@ -93,15 +95,17 @@ static py::array TensorToNumpy(const Tensor& t) {
                    cudaMemcpyDeviceToHost);
         return out;
     }
-    // CPU: zero-copy view.  The returned numpy array holds a reference to
-    // the Python Tensor object, keeping the underlying buffer alive.
-    return py::array(py::buffer_info(const_cast<void*>(t.data()), itemsize, format,
-                                     static_cast<ssize_t>(shape.size()), shape,
-                                     strides));
+    // CPU: zero-copy view.  Without a capsule, numpy copies the buffer.
+    // We create a capsule to signal numpy this is a view (not a copy).
+    // The capsule pointer is non-null, which tells numpy the buffer is borrowed
+    // but a view is permitted (npy_data->obj != NULL, npy_data->mask = NPY_ARRAY_WRITEABLE).
+    py::buffer_info buf_info(
+        const_cast<void*>(t.data()), itemsize, format,
+        static_cast<ssize_t>(shape.size()), shape, strides);
+    // Non-null capsule with no-op destructor: tells numpy to treat as a view.
+    py::array out(buf_info, py::capsule(&t, +[](void* p) {}));
+    return out;
 }
-
-// Convert torch::Tensor → turborl::Tensor (copies if needed).
-// (Reserved for future torch ingestion paths.)
 
 // ============================================================================
 // Module definition

@@ -53,7 +53,8 @@ private:
     Shape obs_shape_;
     Shape action_shape_;
 
-    Tensor states_;  // [num_envs, obs_dim]
+    Tensor states_;   // [num_envs, obs_dim]
+    Tensor temp_states_;  // [num_envs, obs_dim] — swap buffer for Step
 
     float decay_ = 0.99f;
     float force_ = 0.1f;
