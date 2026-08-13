@@ -58,12 +58,18 @@ def numpy_like(shape, dtype="float32", device="cpu"):
 
 
 def random_action(num_envs: int, act_dim: int, device: str):
-    """Sample a clipped-Gaussian action as a Tensor."""
+    """Sample a clipped-Gaussian action as a Tensor.
+
+    Fill on CPU (where `to_numpy()` returns a zero-copy writable view), then
+    move to the target device — `to_numpy()` on a CUDA tensor returns a copy,
+    so writing through it would not reach the device buffer.
+    """
     arr = np.random.randn(num_envs, act_dim).astype(np.float32)
     arr = np.clip(arr, -1.0, 1.0)
-    t = numpy_like((num_envs, act_dim), "float32", device)
-    buf = t.to_numpy()
-    buf[:] = arr
+    t = turbol.Tensor((num_envs, act_dim), "float32", "cpu")
+    t.to_numpy()[:] = arr
+    if "cuda" in device:
+        t.to_device(device)
     return t
 
 
@@ -147,11 +153,7 @@ def main():
             for step in range(args.rollout_steps):
                 action = random_action(args.num_envs, args.act_dim, args.device)
 
-                next_obs = numpy_like((args.num_envs, args.obs_dim), "float32", args.device)
-                reward   = numpy_like((args.num_envs,),              "float32", args.device)
-                done     = numpy_like((args.num_envs,),              "float32", args.device)
-
-                env.step(action, next_obs, reward, done)
+                next_obs, reward, done = env.step(action)
 
                 # Reward as numpy for tracking
                 r_np = np.asarray(reward.to_numpy())

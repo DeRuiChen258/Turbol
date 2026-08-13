@@ -24,6 +24,11 @@ set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
+# Static libraries (turbol, and the vLLM backend it links) may be pulled into
+# the Python shared module (turbol_core), so compile everything position-
+# independent. On x86-64 this has negligible runtime cost.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 # ============================================================================
 # CUDA 13.2 settings — target RTX 5070 (Blackwell, sm_120)
 # ============================================================================

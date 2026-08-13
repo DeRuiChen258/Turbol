@@ -160,8 +160,12 @@ def from_torch(tt: torch.Tensor,
 
 
 def to_torch(t: Tensor) -> torch.Tensor:
-    """Convert a turborl.Tensor to a torch.Tensor (always copies)."""
-    return t.to_torch()
+    """Convert a turborl.Tensor to a torch.Tensor.
+
+    Shares the underlying buffer via numpy (no copy). The caller must keep the
+    source turborl.Tensor alive while the torch.Tensor is in use.
+    """
+    return torch.from_numpy(t.to_numpy())
 
 
 # --------------------------------------------------------------------------- #

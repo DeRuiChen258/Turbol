@@ -29,6 +29,12 @@ pybind11_add_module(turbol_core
 # Link against the compiled turbol static library
 target_link_libraries(turbol_core PRIVATE turbol)
 
+# Place the built .so inside the `turbol/` package directory (next to
+# __init__.py) so `from . import turbol_core` resolves during in-place builds
+# without a separate install step.
+set_target_properties(turbol_core PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/turbol")
+
 # pybind11 + libtorch support
 if(TURBORL_USE_LIBTORCH)
     target_link_libraries(turbol_core PRIVATE ${TORCH_LIBRARIES})

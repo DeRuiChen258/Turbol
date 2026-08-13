@@ -31,6 +31,9 @@
 #include "turbol/profiler/tensorboard_writer.hpp"
 
 #ifdef TURBORL_LIBTORCH
+// NOTE: do NOT include <torch/extension.h> here — its pybind11 caster for
+// at::Tensor is defined in libtorch_python (Python-only), which this extension
+// does not link. at::Tensor conversion is done at the Python level instead.
 #include <torch/torch.h>
 #endif
 
@@ -56,7 +59,9 @@ static Device ParseDevice(const std::string& device_str) {
 // Convert a numpy array or a torch.Tensor into a Tensor (copies to device).
 // (Reserved for future numpy/torch ingestion paths.)
 
-// Create a numpy array view over a Tensor (no copy).
+// Create a numpy array over a Tensor.
+//   CPU  tensors -> zero-copy view (writes through to the underlying buffer).
+//   CUDA tensors -> copy device->host into a numpy-owned buffer (safe read).
 static py::array TensorToNumpy(const Tensor& t) {
     std::vector<ssize_t> shape;
     for (auto d : t.shape().dims) shape.push_back(static_cast<ssize_t>(d));
@@ -72,34 +77,31 @@ static py::array TensorToNumpy(const Tensor& t) {
     }
 
     const ssize_t itemsize = static_cast<ssize_t>(GetDataTypeSize(t.dtype()));
-    // Empty strides → pybind11 assumes C-contiguous layout.
+    // C-contiguous strides (last dim = itemsize, each earlier dim = product of
+    // the trailing dims). Matches turborl::Tensor's row-major layout.
+    std::vector<ssize_t> strides(shape.size());
+    ssize_t stride = itemsize;
+    for (ssize_t i = static_cast<ssize_t>(shape.size()) - 1; i >= 0; --i) {
+        strides[static_cast<size_t>(i)] = stride;
+        stride *= shape[static_cast<size_t>(i)];
+    }
+
+    if (t.is_cuda()) {
+        // Allocate a numpy-owned host buffer and copy the device data down.
+        py::array out(py::dtype(format), shape, strides);
+        cudaMemcpy(out.mutable_data(), t.data(), t.size_bytes(),
+                   cudaMemcpyDeviceToHost);
+        return out;
+    }
+    // CPU: zero-copy view.  The returned numpy array holds a reference to
+    // the Python Tensor object, keeping the underlying buffer alive.
     return py::array(py::buffer_info(const_cast<void*>(t.data()), itemsize, format,
                                      static_cast<ssize_t>(shape.size()), shape,
-                                     std::vector<ssize_t>{}));
+                                     strides));
 }
 
 // Convert torch::Tensor → turborl::Tensor (copies if needed).
 // (Reserved for future torch ingestion paths.)
-
-// Create a torch::Tensor view over a turborl::Tensor (zero-copy if on CUDA).
-static torch::Tensor TensorToTorch(const Tensor& t) {
-#ifdef TURBORL_LIBTORCH
-    c10::ScalarType st;
-    switch (t.dtype()) {
-        case DataType::kFloat32: st = c10::kFloat;  break;
-        case DataType::kFloat16: st = c10::kHalf;   break;
-        case DataType::kInt32:   st = c10::kInt;    break;
-        case DataType::kInt64:   st = c10::kLong;   break;
-        default:                  st = c10::kFloat;  break;
-    }
-    c10::DeviceType dt = t.is_cuda() ? c10::kCUDA : c10::kCPU;
-    std::vector<int64_t> sizes;
-    for (auto d : t.shape().dims) sizes.push_back(d);
-    return torch::from_blob(const_cast<void*>(t.data()), sizes, st).to(dt).clone();
-#else
-    throw std::runtime_error("libtorch not available");
-#endif
-}
 
 // ============================================================================
 // Module definition
@@ -107,6 +109,38 @@ static torch::Tensor TensorToTorch(const Tensor& t) {
 
 PYBIND11_MODULE(turbol_core, m) {
     m.doc() = "TurboRL core — C++ native bindings";
+
+    // ---- Status (error model returned by most mutating methods) ----
+    py::class_<Status>(m, "Status")
+        .def(py::init<>())
+        .def("ok", &Status::ok)
+        .def("code", [](const Status& s) { return static_cast<int>(s.code()); })
+        .def("message", &Status::message)
+        .def("__bool__", [](const Status& s) { return s.ok(); })
+        .def("__repr__", [](const Status& s) { return s.ToString(); });
+
+    // ---- Shape (dimension list, returned by Tensor::shape / env shapes) ----
+    py::class_<Shape>(m, "Shape")
+        .def(py::init<>())
+        .def(py::init<std::vector<int64_t>>())
+        .def("__len__", [](const Shape& s) { return s.size(); })
+        .def("__getitem__", [](const Shape& s, py::ssize_t i) {
+            if (i < 0) i += static_cast<py::ssize_t>(s.size());
+            if (i < 0 || static_cast<size_t>(i) >= s.size())
+                throw py::index_error();
+            return s.dims[i];
+        })
+        .def("to_list", [](const Shape& s) { return s.dims; })
+        .def("__repr__", [](const Shape& s) {
+            std::ostringstream oss;
+            oss << "Shape(";
+            for (size_t i = 0; i < s.dims.size(); ++i) {
+                if (i) oss << ", ";
+                oss << s.dims[i];
+            }
+            oss << ")";
+            return oss.str();
+        });
 
     // ---- Tensor ----
     py::class_<Tensor>(m, "Tensor")
@@ -137,8 +171,9 @@ PYBIND11_MODULE(turbol_core, m) {
         .def("is_cuda",       &Tensor::is_cuda)
         .def("clone",         &Tensor::Clone)
         .def("to_numpy",      &TensorToNumpy)
-        .def("to_torch",      &TensorToTorch)
-        .def("to_device",     &Tensor::ToDevice);
+        .def("to_device",     [](Tensor& self, const std::string& device_str) {
+            return self.ToDevice(ParseDevice(device_str));
+        }, py::arg("device"));
 
     // ---- GPUEnvironment ----
     py::class_<env::GPUEnvironment>(m, "GPUEnvironment")
@@ -150,12 +185,13 @@ PYBIND11_MODULE(turbol_core, m) {
              py::arg("num_envs") = 1, py::arg("obs_dim") = 4,
              py::arg("act_dim") = 2,  py::arg("device") = "cpu")
         .def("reset",        &env::GPUEnvironment::Reset)
-        .def("step",         [](env::GPUEnvironment& self,
-                               const Tensor& action,
-                               Tensor* obs, Tensor* reward, Tensor* done) {
-            return self.Step(action, obs, reward, done);
-        }, py::arg("action"), py::arg("obs"), py::arg("reward"),
-           py::arg("done"), py::return_value_policy::reference_internal)
+        .def("step",         [](env::GPUEnvironment& self, const Tensor& action) {
+            // Return outputs as new tensors to avoid pybind11 output-parameter lifetime issues.
+            Tensor obs, reward, done;
+            Status st = self.Step(action, &obs, &reward, &done);
+            if (!st.ok()) throw std::runtime_error(st.message());
+            return std::make_tuple(std::move(obs), std::move(reward), std::move(done));
+        }, py::arg("action"))
         .def("observe",      &env::GPUEnvironment::Observe)
         .def("num_envs",     &env::GPUEnvironment::NumEnvs)
         .def("obs_shape",    &env::GPUEnvironment::ObsShape)
@@ -202,7 +238,12 @@ PYBIND11_MODULE(turbol_core, m) {
             return self.GetValue(obs, value);
         }, py::arg("observation"), py::arg("value"),
            py::return_value_policy::reference_internal)
-        .def("update",      &policy::PolicyEngine::Update);
+        .def("update",      [](policy::PolicyEngine& self, const Tensor& batch) {
+            // Update() runs loss.backward() (the libtorch autograd engine),
+            // which must not be invoked while the Python GIL is held.
+            py::gil_scoped_release release;
+            return self.Update(batch);
+        }, py::arg("batch"));
 
     // ---- Config ----
     py::class_<Config>(m, "Config")
@@ -331,7 +372,8 @@ PYBIND11_MODULE(turbol_core, m) {
     //   with ProfilerGuard(profiler, "forward", "compute", 0):
     //       model.forward(x)
     //   # span ends automatically here
-    py::class_<profiler::Profiler>(m, "Profiler");  // forward declaration
+    // (No forward declaration for Profiler — the full class_ registration below
+    //  defines the type; a duplicate would trigger "object already defined".)
 
     py::class_<profiler::SpanID>(m, "SpanID")
         .def(py::init<>())
