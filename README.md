@@ -430,6 +430,86 @@ torch::Tensor owned = torch_interop::ToTorch(t);
 | `env_dynamics.cu` | 环境动力学   | 每环境一线程，线性系统 step/reset        |
 | `gae.cu`          | 广义优势估计  | 每环境一线程，反向递推计算 GAE             |
 
+#### 4.3.10 奖励引擎（`reward/`，RLHF）
+
+```cpp
+#include "turbol/reward/reward_engine.hpp"
+using namespace turborl::reward;
+
+RewardConfig cfg;                 // kl_coef / kl_target / adaptive_kl /
+                                  // normalize / reward_clip / 规则权重
+cfg.device = Device::CUDA(0);
+cfg.normalize = true;
+cfg.format_bonus = 0.1f;
+
+RewardEngine engine(cfg);
+engine.Initialize();
+
+RewardResult result;
+std::vector<std::string> responses = {"...", "..."};
+engine.ScoreBatch(responses, std::nullopt, &result);
+// result.total / rule_scores / model_scores / kl_penalties 均为 [batch] 张量
+engine.UpdateAdaptiveKL(/*observed_kl=*/0.12f);   // 自适应 KL 系数
+float coef = engine.CurrentKLCoef();
+```
+
+#### 4.3.11 数据集（`dataset/`）
+
+```cpp
+#include "turbol/dataset/dataset.hpp"
+using namespace turborl::dataset;
+
+DatasetConfig cfg;                 // data_paths / max_seq_length / shuffle
+Dataset ds(cfg);
+ds.Initialize();                   // 流式 JSONL 加载，字节偏移 seek
+while (ds.HasNext()) {
+    PreprocessedBatch b = ds.NextBatch();   // input_ids / attention_mask / labels
+    // 送入 Rollout / Policy
+}
+ds.Reset();                        // 回到数据集起点
+```
+
+#### 4.3.12 性能剖析器（`profiler/`）
+
+```cpp
+#include "turbol/profiler/profiler.hpp"
+using namespace turborl::profiler;
+
+Profiler profiler;
+profiler.Enable();
+
+auto id = profiler.BeginSpan("rollout", "compute", /*device_id=*/0);
+// ... 计时区间 ...
+profiler.EndSpan(id);
+
+// 或使用 RAII Guard 自动收尾
+{
+    Profiler::Guard g(&profiler, "policy_update");
+    // ...
+}
+
+profiler.ExportChromeTrace("/tmp/trace.json");   // chrome://tracing 可视化
+profiler.PrintSummary();                          // 聚合统计摘要
+```
+
+配套的 `TensorBoardWriter`（写入最小化 protobuf Event，无外部 TB 依赖）与
+`PrometheusWriter`（text exposition 格式）位于 `profiler/tensorboard_writer.hpp`。
+
+#### 4.3.13 Pipeline 训练（`distributed/pipeline_trainer.hpp`）
+
+```cpp
+#include "turbol/distributed/pipeline_trainer.hpp"
+using namespace turborl::distributed;
+
+PipelineConfig cfg;                // num_pipeline_stages / num_microbatches / stage_id
+PipelineTrainer trainer(cfg);
+trainer.Initialize();
+
+float avg_loss = 0.0f;
+trainer.TrainingStep(&avg_loss);   // GPipe 风格微批前向/反向调度
+trainer.Shutdown();
+```
+
 ### 4.4 构建与测试
 
 #### 4.4.1 环境要求
@@ -464,11 +544,55 @@ CMake 会自动探测 libtorch（`LIBTORCH_ROOT` 环境变量或默认路径）�
 ```bash
 cd build
 ./turbol_example      # 演示程序
-ctest --output-on-failure   # 25 个单元测试
+ctest --output-on-failure   # 38 个单元测试
 ./turbol_test         # 或直接运行测试二进制
 ```
 
-#### 4.4.4 构建原版（仅 CPU）
+#### 4.4.4 运行微基准测试（Benchmark）
+
+`benchmark_components` 对训练循环中的关键热路径做稳态吞吐量测量（先预热、后计时），覆盖
+环境 step、经验回放 push/sample、策略 forward/update（libtorch）、GAE（CUDA）：
+
+```bash
+cd build
+./benchmark_components                     # 默认 CPU，4096 环境
+./benchmark_components --device cuda       # 走 CUDA 路径
+./benchmark_components --num-envs 8192 --steps 2000 --batch 512
+```
+
+示例输出（RTX 5070，`sm_120`）：
+
+```text
+[1/6] GPUEnvironment::Step (4096 envs, 16x4)   => 1.16 亿 env-steps/s
+[2/6] RingBuffer::PushBatch (256/batch)        => 6766 万 transitions/s
+[3/6] RingBuffer::Sample (256/batch)           => 4447 万 transitions/s
+[4/6] PolicyEngine::Forward (batch=256)        => 1242 万 samples/s
+[5/6] PolicyEngine::Update (batch=256)         => 217 万 samples/s
+[6/6] GAE (T=256, envs=4096)                   => 447 亿 env-steps/s
+```
+
+> 注：CUDA 路径下 `RingBuffer::PushBatch/Sample` 当前为逐元素 `cudaMemcpy` 实现，吞吐量受
+> 同步拷贝限制；未来可用定制 kernel 一次性搬移整批（见「规划中」的 CUDA 内核项）。
+
+#### 4.4.5 构建 Python 绑定（pybind11）
+
+```bash
+pip install pybind11 torch numpy   # 运行时依赖（torch 为可选项，未安装则无法 import turbol）
+cd turbol_vllm
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)     # 生成 build/python/turbol_core*.so
+```
+
+绑定模块 `turbol_core` 暴露 `Tensor / GPUEnvironment / RingBuffer / PolicyEngine /
+RolloutEngine / RewardEngine / DistributedTrainer / Profiler / TensorBoardWriter / PrometheusWriter`
+等全部核心类型，`python/turbol/__init__.py` 负责 re-export 并封装成 `import turbol`。
+示例位于 `examples/py/ppo_example.py` 与 `examples/py/grpo_example.py`。
+
+> **已知限制**：当前环境未安装 Python `torch`，且 `libvllm.a` 以非 PIC 的 `local-exec`
+> TLS 模型编译，链接为共享模块（`.so`）时需 `-fPIC` 重编 vLLM。二者满足后即可 `import turbol`
+> 并运行 Python 示例。
+
+#### 4.4.6 构建原版（仅 CPU）
 
 ```bash
 cd turbol
@@ -507,16 +631,20 @@ cmake --build build -j$(nproc)
 - [x] PolicyEngine（libtorch actor/critic，Forward / GetValue / Update）
 - [x] VLLMBackend 接入真实 `vllm::Engine`，无模型/GPU 时优雅降级
 - [x] CUDA 内核：修复 FlashAttention 在线 softmax、向量化环形缓冲、新增 GAE 内核
-- [x] 单元测试（25 个全部通过）
+- [x] RewardEngine（规则打分 + KL 惩罚 + 自适应 KL + 归一化）
+- [x] Dataset 模块（流式 JSONL 加载、字节偏移 seek）
+- [x] Profiler（CPU/CUDA 计时、Chrome Trace / JSON 导出）+ TensorBoard / Prometheus Writer
+- [x] PipelineTrainer（GPipe 风格微批调度）
+- [x] Python API 层（pybind11 绑定 `turbol_core` + `turbol` 包）
+- [x] 微基准测试套件（`benchmark_components`，吞吐量报告）
+- [x] 单元测试（38 个全部通过）
 
 ### 规划中
 
-- [ ] Reward Engine（奖励模型打分模块）
-- [ ] Dataset 模块（数据加载与预处理）
-- [ ] Profiler / Metrics（TensorBoard、Prometheus 导出）
-- [ ] Python API 层（pybind11 + Torch Extension）
-- [ ] 更多 CUDA 内核（CUTLASS GEMM、FlashAttention-2/3）
-- [ ] 多机分布式与 Pipeline Parallel
+- [ ] 更多 CUDA 内核（CUTLASS GEMM、FlashAttention-2/3、批量回放搬移 kernel）
+- [ ] 多机分布式与 Pipeline Parallel 运行时（NCCL 后端）
+- [ ] 奖励模型推理（Reward Model 前向接入 libtorch）
+- [ ] Python 绑定端到端验证（需 `torch` + `-fPIC` 重编 `libvllm.a`）
 
 ---
 

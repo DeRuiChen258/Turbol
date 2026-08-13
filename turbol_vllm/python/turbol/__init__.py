@@ -56,9 +56,10 @@ __all__ = [
     "DistributedTrainer",
     # Profiler
     "Profiler",
+    "ProfilerGuard",
+    "ProfilerConfig",
     "TensorBoardWriter",
     "PrometheusWriter",
-    "ProfilerConfig",
     "Labels",
     # Helpers
     "get_version",
@@ -86,6 +87,7 @@ RewardResult        = turbol_core.RewardResult
 DistributedConfig   = turbol_core.DistributedConfig
 DistributedTrainer  = turbol_core.DistributedTrainer
 Profiler            = turbol_core.Profiler
+ProfilerGuard        = turbol_core.ProfilerGuard
 ProfilerConfig      = turbol_core.ProfilerConfig
 TensorBoardWriter   = turbol_core.TensorBoardWriter
 PrometheusWriter    = turbol_core.PrometheusWriter

@@ -1,4 +1,4 @@
-# pybind11 C++ bindings — exposes the core C++ modules to Python.
+// pybind11 C++ bindings — exposes the core C++ modules to Python.
 //
 // Exposes:
 //   - Tensor (typed buffer view)
@@ -28,6 +28,7 @@
 #include "turbol/reward/reward_engine.hpp"
 #include "turbol/distributed/distributed_trainer.hpp"
 #include "turbol/profiler/profiler.hpp"
+#include "turbol/profiler/tensorboard_writer.hpp"
 
 #ifdef TURBORL_LIBTORCH
 #include <torch/torch.h>
@@ -40,64 +41,45 @@ using namespace turborl;
 // Helpers
 // ============================================================================
 
-// Convert a numpy array or a torch.Tensor into a Tensor (copies to device).
-static Tensor NumpyOrTorchToTensor(py::object obj,
-                                   const Device& device,
-                                   DataType dtype = DataType::kFloat32) {
-    py::array arr;
-    if (py::isinstance<py::array>(obj)) {
-        arr = py::cast<py::array>(obj);
-    } else if (py::hasattr(obj, "numpy")) {
-        // torch.Tensor → .numpy()
-        arr = py::cast<py::array>(obj.attr("numpy")());
-    } else {
-        throw std::runtime_error("Expected numpy array or torch.Tensor");
+// Parse a device string ("cpu", "cuda", "cuda:0", ...) into a Device.
+static Device ParseDevice(const std::string& device_str) {
+    if (device_str.find("cuda") != std::string::npos) {
+        int id = 0;
+        auto pos = device_str.find(':');
+        if (pos != std::string::npos)
+            id = std::stoi(device_str.substr(pos + 1));
+        return Device::CUDA(id);
     }
-
-    std::vector<int64_t> shape;
-    for (auto r : arr.shape()) shape.push_back(r);
-
-    Tensor t(Shape(shape), dtype, device);
-    std::memcpy(t.data(), arr.data(), t.size_bytes());
-    return t;
+    return Device::CPU();
 }
+
+// Convert a numpy array or a torch.Tensor into a Tensor (copies to device).
+// (Reserved for future numpy/torch ingestion paths.)
 
 // Create a numpy array view over a Tensor (no copy).
 static py::array TensorToNumpy(const Tensor& t) {
     std::vector<ssize_t> shape;
     for (auto d : t.shape().dims) shape.push_back(static_cast<ssize_t>(d));
 
-    std::string dtype_str;
+    std::string format;
     switch (t.dtype()) {
-        case DataType::kFloat32: dtype_str = "f"; break;
-        case DataType::kFloat16: dtype_str = "e"; break;
-        case DataType::kInt32:   dtype_str = "i"; break;
-        case DataType::kInt64:   dtype_str = "q"; break;
-        case DataType::kBool:    dtype_str = "?"; break;
-        default:                  dtype_str = "f"; break;
+        case DataType::kFloat32: format = py::format_descriptor<float>::format();  break;
+        case DataType::kFloat16: format = "e"; break;
+        case DataType::kInt32:   format = py::format_descriptor<int32_t>::format(); break;
+        case DataType::kInt64:   format = py::format_descriptor<int64_t>::format(); break;
+        case DataType::kBool:    format = "?"; break;
+        default:                 format = py::format_descriptor<float>::format();  break;
     }
 
-    // numpy takes a mutable buffer for non-const Tensor
-    return py::array(py::buffer_info(t.data(), GetDataTypeSize(t.dtype())),
-                     shape);
+    const ssize_t itemsize = static_cast<ssize_t>(GetDataTypeSize(t.dtype()));
+    // Empty strides → pybind11 assumes C-contiguous layout.
+    return py::array(py::buffer_info(const_cast<void*>(t.data()), itemsize, format,
+                                     static_cast<ssize_t>(shape.size()), shape,
+                                     std::vector<ssize_t>{}));
 }
 
 // Convert torch::Tensor → turborl::Tensor (copies if needed).
-static Tensor TorchToTensor(const torch::Tensor& tt) {
-    torch::Tensor t = tt.contiguous();
-    Device d = Device::CUDA(0);  // assume CUDA for torch tensors
-    Shape s;
-    for (auto d_ : t.sizes()) s.dims.push_back(d_.item<int64_t>());
-    DataType dt;
-    if      (t.dtype() == torch::kFloat32) dt = DataType::kFloat32;
-    else if (t.dtype() == torch::kFloat16) dt = DataType::kFloat16;
-    else if (t.dtype() == torch::kInt32)   dt = DataType::kInt32;
-    else if (t.dtype() == torch::kInt64)   dt = DataType::kInt64;
-    else                                    dt = DataType::kFloat32;
-    Tensor out(s, dt, d);
-    std::memcpy(out.data(), t.data_ptr(), out.size_bytes());
-    return out;
-}
+// (Reserved for future torch ingestion paths.)
 
 // Create a torch::Tensor view over a turborl::Tensor (zero-copy if on CUDA).
 static torch::Tensor TensorToTorch(const Tensor& t) {
@@ -113,7 +95,7 @@ static torch::Tensor TensorToTorch(const Tensor& t) {
     c10::DeviceType dt = t.is_cuda() ? c10::kCUDA : c10::kCPU;
     std::vector<int64_t> sizes;
     for (auto d : t.shape().dims) sizes.push_back(d);
-    return torch::from_blob(t.data(), sizes, st).to(dt).clone();
+    return torch::from_blob(const_cast<void*>(t.data()), sizes, st).to(dt).clone();
 #else
     throw std::runtime_error("libtorch not available");
 #endif
@@ -160,7 +142,11 @@ PYBIND11_MODULE(turbol_core, m) {
 
     // ---- GPUEnvironment ----
     py::class_<env::GPUEnvironment>(m, "GPUEnvironment")
-        .def(py::init<int, int, int, const std::string&>(),
+        .def(py::init([](int num_envs, int obs_dim, int act_dim,
+                         const std::string& device) {
+                 return env::GPUEnvironment(num_envs, obs_dim, act_dim,
+                                            ParseDevice(device));
+             }),
              py::arg("num_envs") = 1, py::arg("obs_dim") = 4,
              py::arg("act_dim") = 2,  py::arg("device") = "cpu")
         .def("reset",        &env::GPUEnvironment::Reset)
@@ -177,7 +163,11 @@ PYBIND11_MODULE(turbol_core, m) {
 
     // ---- RingBuffer ----
     py::class_<replay_buffer::RingBuffer>(m, "RingBuffer")
-        .def(py::init<int, int, int, const std::string&>(),
+        .def(py::init([](int capacity, int obs_dim, int act_dim,
+                         const std::string& device) {
+                 return replay_buffer::RingBuffer(capacity, obs_dim, act_dim,
+                                                  ParseDevice(device));
+             }),
              py::arg("capacity"), py::arg("obs_dim"),
              py::arg("act_dim"),  py::arg("device") = "cpu")
         .def("push",        &replay_buffer::RingBuffer::Push)
@@ -192,8 +182,13 @@ PYBIND11_MODULE(turbol_core, m) {
         .def("clear",       &replay_buffer::RingBuffer::Clear);
 
     // ---- PolicyEngine ----
+    // NOTE: PolicyEngine is non-movable (holds torch::optim::Adam), so the init
+    // factory must return a raw pointer rather than by value.
     py::class_<policy::PolicyEngine>(m, "PolicyEngine")
-        .def(py::init<int, int, const std::string&>(),
+        .def(py::init([](int obs_dim, int act_dim, const std::string& device) {
+                 return new policy::PolicyEngine(obs_dim, act_dim,
+                                                 ParseDevice(device));
+             }),
              py::arg("obs_dim") = 4, py::arg("act_dim") = 2,
              py::arg("device") = "cpu")
         .def("initialize",  &policy::PolicyEngine::Initialize)
@@ -330,6 +325,29 @@ PYBIND11_MODULE(turbol_core, m) {
         .def("get_world_size", &distributed::DistributedTrainer::GetWorldSize);
 
     // ---- Profiler ----
+
+    // ProfilerGuard — RAII context manager that auto-ends a span.
+    // Usage in Python:
+    //   with ProfilerGuard(profiler, "forward", "compute", 0):
+    //       model.forward(x)
+    //   # span ends automatically here
+    py::class_<profiler::Profiler>(m, "Profiler");  // forward declaration
+
+    py::class_<profiler::SpanID>(m, "SpanID")
+        .def(py::init<>())
+        .def_readwrite("id", &profiler::SpanID::id);
+
+    py::class_<profiler::Profiler::Guard>(m, "ProfilerGuard")
+        .def(py::init<profiler::Profiler*, const std::string&,
+                       const std::string&, int>(),
+             py::arg("profiler"), py::arg("name"),
+             py::arg("category") = "compute", py::arg("device_id") = -1)
+        .def("__enter__", [](profiler::Profiler::Guard& g) -> profiler::Profiler::Guard& { return g; })
+        .def("__exit__", [](profiler::Profiler::Guard& g,
+                             const py::object&, const py::object&, const py::object&) {
+            // Guard destructor auto-calls EndSpan
+        });
+
     py::class_<profiler::ProfilerConfig>(m, "ProfilerConfig")
         .def(py::init<>())
         .def_readwrite("enable_nvtx",        &profiler::ProfilerConfig::enable_nvtx)
@@ -345,8 +363,19 @@ PYBIND11_MODULE(turbol_core, m) {
         .def("enable",      &profiler::Profiler::Enable)
         .def("disable",     &profiler::Profiler::Disable)
         .def("is_enabled",  &profiler::Profiler::IsEnabled)
-        .def("begin_span",  &profiler::Profiler::BeginSpan)
+        .def("begin_span",  [](profiler::Profiler& self, const std::string& name,
+                                const std::string& category, int device_id) {
+            return self.BeginSpan(name, category, device_id);
+        }, py::arg("name"), py::arg("category") = "compute",
+           py::arg("device_id") = -1)
         .def("end_span",    &profiler::Profiler::EndSpan)
+        // Context-manager shortcut: with profiler.span("name"): ...
+        .def("span",        [](profiler::Profiler* self, const std::string& name,
+                                const std::string& category, int device_id) {
+            return profiler::Profiler::Guard(self, name, category, device_id);
+        }, py::arg("name"), py::arg("category") = "compute",
+           py::arg("device_id") = -1,
+           "Returns a context-manager Guard that auto-ends the span on __exit__.")
         .def("begin_event", &profiler::Profiler::BeginEvent)
         .def("end_event",   &profiler::Profiler::EndEvent)
         .def("mark",        &profiler::Profiler::Mark)
@@ -357,16 +386,35 @@ PYBIND11_MODULE(turbol_core, m) {
         .def("get_all_spans", &profiler::Profiler::GetAllSpans)
         .def("get_stats",    &profiler::Profiler::GetStats);
 
-    // TensorBoard writer
+    // AggregatedStats
+    py::class_<profiler::AggregatedStats>(m, "AggregatedStats")
+        .def_readonly("name",     &profiler::AggregatedStats::name)
+        .def_readonly("count",    &profiler::AggregatedStats::count)
+        .def_readonly("total_ns", &profiler::AggregatedStats::total_ns)
+        .def_readonly("min_ns",   &profiler::AggregatedStats::min_ns)
+        .def_readonly("max_ns",   &profiler::AggregatedStats::max_ns)
+        .def("avg_ns",            &profiler::AggregatedStats::avg_ns);
+
+    // TensorBoard writer — AddHistogram accepts a numpy array directly
     py::class_<profiler::TensorBoardWriter>(m, "TensorBoardWriter")
         .def(py::init<const std::string&>(), py::arg("log_dir"))
-        .def("add_scalar",   &profiler::TensorBoardWriter::AddScalar,
+        .def("add_scalar",
+             [](profiler::TensorBoardWriter& self, const std::string& tag,
+                float value, int step) { self.AddScalar(tag, value, step); },
              py::arg("tag"), py::arg("value"), py::arg("step"))
-        .def("add_histogram",&profiler::TensorBoardWriter::AddHistogram,
-             py::arg("tag"), py::arg("values"), py::arg("count"), py::arg("step"))
-        .def("add_text",     &profiler::TensorBoardWriter::AddText,
+        .def("add_histogram",
+             [](profiler::TensorBoardWriter& self, const std::string& tag,
+                py::array_t<float> values, int step) {
+                 auto buf = values.request();
+                 self.AddHistogram(tag,
+                                   static_cast<const float*>(buf.ptr),
+                                   static_cast<int>(buf.size), step);
+             }, py::arg("tag"), py::arg("values"), py::arg("step"))
+        .def("add_text",
+             [](profiler::TensorBoardWriter& self, const std::string& tag,
+                const std::string& text, int step) { self.AddText(tag, text, step); },
              py::arg("tag"), py::arg("text"), py::arg("step"))
-        .def("flush",        &profiler::TensorBoardWriter::Flush);
+        .def("flush", &profiler::TensorBoardWriter::Flush);
 
     // Prometheus writer
     py::class_<profiler::Labels>(m, "Labels")

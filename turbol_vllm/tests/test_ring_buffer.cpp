@@ -48,3 +48,28 @@ TEST_F(RingBufferTest, Clear) {
     EXPECT_EQ(buffer->Size(), 0);
     EXPECT_EQ(buffer->Capacity(), 1000);
 }
+
+TEST_F(RingBufferTest, PushBatchAndSample) {
+    const int B = 32;
+    Tensor obs(Shape({B, 128}), DataType::kFloat32, Device::CPU());
+    Tensor act(Shape({B, 8}), DataType::kFloat32, Device::CPU());
+    Tensor reward(Shape({B}), DataType::kFloat32, Device::CPU());
+    Tensor done(Shape({B}), DataType::kBool, Device::CPU());
+
+    for (int i = 0; i < B; ++i) {
+        obs.data<float>()[i * 128] = static_cast<float>(i);
+        act.data<float>()[i * 8] = static_cast<float>(i);
+        reward.data<float>()[i] = 1.0f;
+        done.data<bool>()[i] = (i % 2 == 0);
+    }
+
+    Status status = buffer->PushBatch(obs, act, reward, done);
+    EXPECT_TRUE(status.ok());
+    EXPECT_EQ(buffer->Size(), B);
+
+    Tensor s_obs, s_act, s_rew, s_done;
+    status = buffer->Sample(B, &s_obs, &s_act, &s_rew, &s_done);
+    EXPECT_TRUE(status.ok());
+    EXPECT_EQ(s_obs.numel(), B * 128);
+    EXPECT_EQ(s_done.numel(), B);
+}

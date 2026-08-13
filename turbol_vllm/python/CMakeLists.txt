@@ -10,6 +10,12 @@ find_package(pybind11 CONFIG REQUIRED)
 message(STATUS "pybind11 version: ${pybind11_VERSION}")
 message(STATUS "pybind11 include:  ${pybind11_INCLUDE_DIR}")
 
+# pybind11's pybind11_add_module() relies on Python_add_library, provided by
+# FindPython (Development.Module). Without this, configuration fails with
+# "Unknown CMake command python_add_library".
+find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
+message(STATUS "Python: ${Python_EXECUTABLE} (${Python_VERSION})")
+
 # --------------------------------------------------------------------------- #
 # Compile the C++ extension
 # --------------------------------------------------------------------------- #

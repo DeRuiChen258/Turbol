@@ -74,7 +74,8 @@ Status RingBuffer::PushBatch(const Tensor& obs, const Tensor& act,
                        static_cast<size_t>(act_dim_) * sizeof(float), cudaMemcpyDeviceToDevice);
             cudaMemcpy(rewards_.data<float>() + slot, reward.data<float>() + i,
                        sizeof(float), cudaMemcpyDeviceToDevice);
-            cudaMemsetAsync(dones_.data<bool>() + slot, done.data<bool>()[i] ? 1 : 0, sizeof(bool));
+            cudaMemcpy(dones_.data<bool>() + slot, done.data<bool>() + i,
+                       sizeof(bool), cudaMemcpyDeviceToDevice);
         } else
 #endif
         {

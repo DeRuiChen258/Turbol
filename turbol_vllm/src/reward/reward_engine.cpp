@@ -152,20 +152,16 @@ Status RewardEngine::ComputeKLPenalty(const Tensor& logprobs,
 }
 
 Status RewardEngine::Normalize(Tensor* rewards) {
+    // Simple per-batch normalization: subtract batch mean so result has mean ≈ 0.
+    // This is the standard approach used in RL (per-batch whitening).
     auto* r = rewards->data<float>();
     const int N = static_cast<int>(rewards->numel());
-    if (update_count_ == 0) {
-        // First pass: compute mean
-        float mean = 0.0f;
-        for (int i = 0; i < N; ++i) mean += r[i];
-        mean /= N;
-        for (int i = 0; i < N; ++i) r[i] -= mean;
-        reward_mean_.data<float>()[0] = mean;
-    } else {
-        float mean = reward_mean_.data<float>()[0];
-        for (int i = 0; i < N; ++i) r[i] -= mean;
-    }
-    return UpdateStats(*rewards);
+
+    float mean = 0.0f;
+    for (int i = 0; i < N; ++i) mean += r[i];
+    mean /= static_cast<float>(N);
+    for (int i = 0; i < N; ++i) r[i] -= mean;
+    return Status::Ok();
 }
 
 Status RewardEngine::UpdateStats(const Tensor& rewards) {
