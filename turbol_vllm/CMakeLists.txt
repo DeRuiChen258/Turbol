@@ -106,6 +106,15 @@ set(DIST_SOURCES
     src/distributed/nccl_communicator.cpp)
 set(UTILS_SOURCES
     src/utils/tensor_utils.cpp)
+set(PROFILER_SOURCES
+    src/profiler/profiler.cpp
+    src/profiler/tensorboard_writer.cpp)
+set(REWARD_SOURCES
+    src/reward/reward_engine.cpp)
+set(DATASET_SOURCES
+    src/dataset/dataset.cpp)
+set(PIPELINE_SOURCES
+    src/distributed/pipeline_trainer.cpp)
 set(CUDA_SOURCES
     src/cuda/attention.cu
     src/cuda/ring_buffer.cu
@@ -114,7 +123,8 @@ set(CUDA_SOURCES
     src/cuda/gae.cu)
 
 set(ALL_CPP ${CORE_SOURCES} ${ENV_SOURCES} ${RB_SOURCES}
-            ${ROLLOUT_SOURCES} ${POLICY_SOURCES} ${DIST_SOURCES} ${UTILS_SOURCES})
+            ${ROLLOUT_SOURCES} ${POLICY_SOURCES} ${DIST_SOURCES} ${UTILS_SOURCES}
+            ${PROFILER_SOURCES} ${REWARD_SOURCES} ${DATASET_SOURCES} ${PIPELINE_SOURCES})
 
 # ============================================================================
 # Library
@@ -162,7 +172,8 @@ if(TURBORL_ENABLE_TESTS)
         tests/test_ring_buffer.cpp
         tests/test_rollout.cpp
         tests/test_config.cpp
-        tests/test_tensor_utils.cpp)
+        tests/test_tensor_utils.cpp
+        tests/test_profiler_reward.cpp)
     target_link_libraries(turbol_test PRIVATE turbol GTest::gtest_main Threads::Threads)
     include(GoogleTest)
     gtest_discover_tests(turbol_test)
@@ -173,6 +184,18 @@ if(TURBORL_ENABLE_BENCHMARKS)
     target_link_libraries(benchmark_tensor PRIVATE turbol)
     add_executable(benchmark_attention benchmarks/benchmark_attention.cpp)
     target_link_libraries(benchmark_attention PRIVATE turbol)
+endif()
+
+# ============================================================================
+# Python bindings (pybind11)
+# ============================================================================
+find_package(pybind11 CONFIG QUIET)
+if(pybind11_FOUND)
+    message(STATUS "pybind11: FOUND — building Python bindings")
+    add_subdirectory(python)
+else()
+    message(STATUS "pybind11: NOT FOUND — Python bindings disabled")
+    message(STATUS "  Install with: pip install pybind11")
 endif()
 
 message(STATUS "========================================")
