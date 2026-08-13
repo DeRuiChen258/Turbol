@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-cpu:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake g++ libgtest-dev
+    
+    - name: Build CPU version
+      run: |
+        cd turbol
+        mkdir -p build && cd build
+        cmake .. -DCMAKE_BUILD_TYPE=Release \
+            -DTURBORL_ENABLE_CUDA=OFF \
+            -DTURBORL_ENABLE_TESTS=ON
+        cmake --build . -j$(nproc)
+    
+    - name: Run tests
+      run: |
+        cd turbol/build
+        ./turbol_test
+
+  build-cuda:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install CUDA
+      uses: awalsh128/cache-apt-pkgs-action@latest
+      with:
+        packages: cuda-toolkit-13-2
+    
+    - name: Build CUDA version
+      run: |
+        export PATH=/usr/local/cuda-13.2/bin:$PATH
+        cd turbol_vllm
+        mkdir -p build && cd build
+        cmake .. -DCMAKE_BUILD_TYPE=Release \
+            -DTURBORL_ENABLE_CUDA=ON \
+            -DTURBORL_ENABLE_TESTS=ON \
+            -DTURBORL_USE_LIBTORCH=OFF
+        cmake --build . -j$(nproc)
+    
+    - name: Run tests
+      run: |
+        cd turbol_vllm/build
+        ./turbol_test
