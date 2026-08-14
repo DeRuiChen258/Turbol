@@ -54,6 +54,11 @@ __all__ = [
     "RolloutEngine",
     "RewardEngine",
     "DistributedTrainer",
+    # vLLM / DeepSeek Python inference backend
+    "VLLMInferenceEngine",
+    "VLLMInferenceConfig",
+    "DEEPSEEK_MODELS",
+    "vllm_available",
     # Profiler
     "Profiler",
     "ProfilerGuard",
@@ -96,6 +101,18 @@ Labels              = turbol_core.Labels
 get_version         = turbol_core.get_version
 get_device_count    = turbol_core.get_device_count
 get_memory_info     = turbol_core.get_memory_info
+
+
+# --------------------------------------------------------------------------- #
+# vLLM / DeepSeek Python inference backend (lazy; vllm imported on first use)
+# --------------------------------------------------------------------------- #
+
+from . import vllm_inference  # noqa: E402
+
+VLLMInferenceEngine = vllm_inference.VLLMInferenceEngine
+VLLMInferenceConfig = vllm_inference.VLLMInferenceConfig
+DEEPSEEK_MODELS     = vllm_inference.DEEPSEEK_MODELS
+vllm_available      = vllm_inference.vllm_available
 
 
 # --------------------------------------------------------------------------- #
