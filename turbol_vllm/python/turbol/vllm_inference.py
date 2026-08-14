@@ -28,6 +28,7 @@ Usage::
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import List, Optional, Sequence
 
@@ -104,11 +105,15 @@ class VLLMInferenceConfig:
     trust_remote_code: bool = True
     use_chat_template: bool = False
     gpu_memory_utilization: float = 0.90
+    max_model_len: int = 8192
     fallback_to_echo: bool = True
     """When vLLM/model is unavailable, return a deterministic echo instead of raising."""
 
     def resolve_model(self) -> str:
-        """Resolve a preset key to its full Hugging Face repo id."""
+        """Resolve a preset key to its full Hugging Face repo id,
+        or return as-is if already a local path or full HF id."""
+        if os.path.exists(self.model):
+            return self.model
         return DEEPSEEK_MODELS.get(self.model, {}).get("repo", self.model)
 
     def uses_chat_template(self) -> bool:
@@ -172,7 +177,7 @@ class VLLMInferenceEngine:
                 dtype=self.config.dtype,
                 trust_remote_code=self.config.trust_remote_code,
                 gpu_memory_utilization=self.config.gpu_memory_utilization,
-                max_model_len=None,
+                max_model_len=self.config.max_model_len,
             )
             self._sampling_params = SamplingParams(
                 temperature=self.config.temperature,
