@@ -37,8 +37,9 @@ if(TURBORL_ENABLE_CUDA)
     set(CMAKE_CUDA_STANDARD 20)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
     set(CMAKE_CUDA_EXTENSIONS OFF)
-    # sm_120 = Blackwell (RTX 5070). Provide a PTX fallback for forward compat.
-    set(CMAKE_CUDA_ARCHITECTURES 120)
+    # Default target is sm_120 (Blackwell / RTX 50 series). Override for other
+    # GPUs, e.g. -DCMAKE_CUDA_ARCHITECTURES="86;90".
+    set(CMAKE_CUDA_ARCHITECTURES "120" CACHE STRING "CUDA architectures to build")
     set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-relaxed-constexpr --use_fast_math")
     find_package(CUDAToolkit REQUIRED)
     add_definitions(-DTURBORL_CUDA=1)
@@ -48,14 +49,22 @@ endif()
 # libtorch (PyTorch C++ frontend) — CUDA 13.2 build
 # ============================================================================
 if(TURBORL_USE_LIBTORCH)
-    set(LIBTORCH_ROOT "/opt/libtorch"
-        CACHE PATH "Path to libtorch distribution")
+    # Resolve libtorch in this order:
+    #   1) -DLIBTORCH_ROOT=<path> / preset toolchain
+    #   2) $LIBTORCH_ROOT environment variable
+    #   3) CMake's default search (CMAKE_PREFIX_PATH, system locations)
+    if(NOT LIBTORCH_ROOT AND DEFINED ENV{LIBTORCH_ROOT})
+        set(LIBTORCH_ROOT "$ENV{LIBTORCH_ROOT}"
+            CACHE PATH "Path to libtorch distribution")
+    endif()
+    if(LIBTORCH_ROOT)
+        list(PREPEND CMAKE_PREFIX_PATH "${LIBTORCH_ROOT}")
+    endif()
     # libtorch ignores CMAKE_CUDA_ARCHITECTURES; honor its own variable instead.
     set(TORCH_CUDA_ARCH_LIST "12.0")
-    list(PREPEND CMAKE_PREFIX_PATH "${LIBTORCH_ROOT}")
     find_package(Torch REQUIRED)
     add_definitions(-DTURBORL_LIBTORCH=1)
-    message(STATUS "libtorch: ENABLED at ${LIBTORCH_ROOT}")
+    message(STATUS "libtorch: ENABLED (Torch_DIR=${Torch_DIR})")
 endif()
 
 # ============================================================================

@@ -171,7 +171,11 @@ PYBIND11_MODULE(turbol_core, m) {
         .def("numel",         &Tensor::numel)
         .def("shape",         &Tensor::shape)
         .def("dtype",         &Tensor::dtype)
-        .def("device",        &Tensor::device)
+        // Device is a value type without a Python binding; expose its textual
+        // form ("cpu", "cuda:0", ...) which round-trips through ParseDevice().
+        .def("device",        [](const Tensor& self) {
+            return self.device().ToString();
+        })
         .def("is_cuda",       &Tensor::is_cuda)
         .def("clone",         &Tensor::Clone)
         .def("to_numpy",      &TensorToNumpy)
