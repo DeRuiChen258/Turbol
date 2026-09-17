@@ -8,6 +8,7 @@ on:
 
 jobs:
   build-cpu:
+    name: CPU build (turbol)
     runs-on: ubuntu-latest
     
     steps:
@@ -16,45 +17,42 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake g++ libgtest-dev
+        sudo apt-get install -y cmake ninja-build g++ libgtest-dev
     
     - name: Build CPU version
       run: |
-        cd turbol
-        mkdir -p build && cd build
-        cmake .. -DCMAKE_BUILD_TYPE=Release \
+        cmake -S turbol -B turbol/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
             -DTURBORL_ENABLE_CUDA=OFF \
             -DTURBORL_ENABLE_TESTS=ON
-        cmake --build . -j$(nproc)
+        cmake --build turbol/build -j$(nproc)
     
     - name: Run tests
-      run: |
-        cd turbol/build
-        ./turbol_test
+      run: ctest --test-dir turbol/build --output-on-failure
 
   build-cuda:
+    name: CUDA build (turbol_vllm)
     runs-on: ubuntu-latest
-    
+    # Official CUDA 13.2 toolchain image: the ubuntu runner itself has no CUDA
+    # toolkit, and compiling only needs nvcc — no GPU/driver is required here.
+    container: nvidia/cuda:13.2.0-devel-ubuntu24.04
+
     steps:
     - uses: actions/checkout@v4
     
-    - name: Install CUDA
-      uses: awalsh128/cache-apt-pkgs-action@latest
-      with:
-        packages: cuda-toolkit-13-2
+    - name: Install dependencies
+      run: |
+        apt-get update
+        apt-get install -y cmake ninja-build g++ libgtest-dev
     
     - name: Build CUDA version
       run: |
-        export PATH=/usr/local/cuda-13.2/bin:$PATH
-        cd turbol_vllm
-        mkdir -p build && cd build
-        cmake .. -DCMAKE_BUILD_TYPE=Release \
+        cmake -S turbol_vllm -B turbol_vllm/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
             -DTURBORL_ENABLE_CUDA=ON \
             -DTURBORL_ENABLE_TESTS=ON \
             -DTURBORL_USE_LIBTORCH=OFF
-        cmake --build . -j$(nproc)
+        cmake --build turbol_vllm/build -j$(nproc)
     
     - name: Run tests
-      run: |
-        cd turbol_vllm/build
-        ./turbol_test
+      run: ctest --test-dir turbol_vllm/build --output-on-failure

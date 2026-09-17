@@ -9,7 +9,7 @@
 ```markdown
 # 角色
 你是一名资深 RL Infra 系统工程师 + 技术产品负责人。请基于以下背景、市场判断与目标清单，
-对 TurboRL 项目（本仓库）进行改进。
+对本仓库（TurboRL）进行改进。
 
 # 项目背景
 TurboRL 是 GPU 原生的 RL/RLHF 基础设施，C++23 / C17 / CUDA 13.2（sm_120, RTX 5070），
