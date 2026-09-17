@@ -11,6 +11,7 @@ namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
 
+#ifdef TURBORL_LIBTORCH
 // Copy a contiguous torch tensor into a pre-sized turborl::Tensor living on the
 // same device (no dtype/shape conversion — caller guarantees layout parity).
 void CopyTorchToTensor(const torch::Tensor& src, Tensor* dst) {
@@ -22,6 +23,7 @@ void CopyTorchToTensor(const torch::Tensor& src, Tensor* dst) {
 #endif
         std::memcpy(dst->data(), src.data_ptr(), bytes);
 }
+#endif // TURBORL_LIBTORCH
 
 } // namespace
 
