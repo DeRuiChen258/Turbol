@@ -7,25 +7,13 @@
 namespace turborl {
 namespace policy {
 
+#ifdef TURBORL_LIBTORCH
 namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
 
-#ifdef TURBORL_LIBTORCH
-// Copy a contiguous torch tensor into a pre-sized turborl::Tensor living on the
-// same device (no dtype/shape conversion — caller guarantees layout parity).
-void CopyTorchToTensor(const torch::Tensor& src, Tensor* dst) {
-    const size_t bytes = dst->size_bytes();
-#ifdef TURBORL_HAS_CUDA
-    if (dst->is_cuda())
-        cudaMemcpy(dst->data(), src.data_ptr(), bytes, cudaMemcpyDeviceToDevice);
-    else
-#endif
-        std::memcpy(dst->data(), src.data_ptr(), bytes);
-}
-#endif // TURBORL_LIBTORCH
-
 } // namespace
+#endif // TURBORL_LIBTORCH
 
 PolicyEngine::PolicyEngine(int obs_dim, int act_dim, Device device)
     : obs_dim_(obs_dim), act_dim_(act_dim), device_(device) {}
@@ -80,8 +68,8 @@ Status PolicyEngine::Forward(const Tensor& observation, Tensor* action,
 
     *action = Tensor(Shape(std::vector<int64_t>{n, act_dim_}), DataType::kFloat32, device_);
     *logprob = Tensor(Shape(std::vector<int64_t>{n}), DataType::kFloat32, device_);
-    CopyTorchToTensor(sample.contiguous(), action);
-    CopyTorchToTensor(lp.contiguous(), logprob);
+    torch_interop::CopyToTensor(sample.contiguous(), action);
+    torch_interop::CopyToTensor(lp.contiguous(), logprob);
     return Status::Ok();
 #else
     (void)observation; (void)action; (void)logprob;
@@ -104,7 +92,7 @@ Status PolicyEngine::GetValue(const Tensor& observation, Tensor* value) {
     torch::Tensor v = (*critic_)(obs).squeeze(-1);  // [N]
 
     *value = Tensor(Shape(std::vector<int64_t>{n}), DataType::kFloat32, device_);
-    CopyTorchToTensor(v.contiguous(), value);
+    torch_interop::CopyToTensor(v.contiguous(), value);
     return Status::Ok();
 #else
     (void)observation; (void)value;

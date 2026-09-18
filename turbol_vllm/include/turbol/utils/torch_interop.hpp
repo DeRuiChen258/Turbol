@@ -4,6 +4,11 @@
 // TurboRL <-> libtorch interop
 //   Provides zero-copy and copy conversions between turborl::Tensor and
 //   torch::Tensor. Only compiled when TURBORL_LIBTORCH is defined.
+//
+//   Invariant: every torch-facing helper lives in this header, or inside the
+//   `#ifdef TURBORL_LIBTORCH` members of the classes that use torch. Any use of
+//   a `torch::` symbol outside those guards breaks libtorch-free builds
+//   (-DTURBORL_USE_LIBTORCH=OFF), which CI compiles on every push.
 // ============================================================================
 
 #include "../common.hpp"
@@ -53,6 +58,19 @@ inline torch::Tensor AsTorchView(Tensor& src) {
 // Owned copy of a turborl::Tensor (deep copy into a torch-managed tensor).
 inline torch::Tensor ToTorch(const Tensor& src) {
     return AsTorchView(const_cast<Tensor&>(src)).clone();
+}
+
+// Copy a contiguous torch tensor into a pre-sized turborl::Tensor living on the
+// same device (no dtype/shape conversion — caller guarantees layout parity).
+inline void CopyToTensor(const torch::Tensor& src, Tensor* dst) {
+    const size_t bytes = dst->size_bytes();
+#ifdef TURBORL_HAS_CUDA
+    if (dst->is_cuda()) {
+        cudaMemcpy(dst->data(), src.data_ptr(), bytes, cudaMemcpyDeviceToDevice);
+        return;
+    }
+#endif
+    std::memcpy(dst->data(), src.data_ptr(), bytes);
 }
 
 } // namespace torch_interop

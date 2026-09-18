@@ -2,9 +2,20 @@
 #include "turbol/profiler/profiler.hpp"
 #include "turbol/reward/reward_engine.hpp"
 
+#include <chrono>
+
 namespace {
 
 using namespace turborl;
+
+// Busy-wait for `min_duration` so that a profiler span has a measurable,
+// non-zero duration. `steady_clock::now()` cannot be folded away, unlike the
+// deprecated `volatile` loop counter idiom that GCC 15 warns about (-Wvolatile).
+void SpinCpu(std::chrono::microseconds min_duration) {
+    const auto deadline = std::chrono::steady_clock::now() + min_duration;
+    while (std::chrono::steady_clock::now() < deadline) {
+    }
+}
 
 // ============================================================================
 // Profiler Tests
@@ -30,7 +41,7 @@ TEST_F(ProfilerTest, CpuSpan) {
 
     auto id = prof.BeginSpan("test_span", "compute", -1);
     // Minimal work to ensure duration > 0
-    for (volatile int i = 0; i < 1000; ++i) {}
+    SpinCpu(std::chrono::microseconds(50));
     prof.EndSpan(id);
 
     auto spans = prof.GetAllSpans();
@@ -45,7 +56,7 @@ TEST_F(ProfilerTest, AggregatedStats) {
 
     for (int i = 0; i < 3; ++i) {
         auto id = prof.BeginSpan("repeat", "compute", -1);
-        for (volatile int j = 0; j < 1000; ++j) {}
+        SpinCpu(std::chrono::microseconds(50));
         prof.EndSpan(id);
     }
 
@@ -90,7 +101,7 @@ TEST_F(ProfilerTest, RAIIGuard) {
     prof.Enable();
     {
         profiler::Profiler::Guard guard(&prof, "scoped_span", "compute");
-        for (volatile int j = 0; j < 10000; ++j) {}
+        SpinCpu(std::chrono::microseconds(50));
     }
     auto spans = prof.GetAllSpans();
     ASSERT_EQ(spans.size(), 1u);
